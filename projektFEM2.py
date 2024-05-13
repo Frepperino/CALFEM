@@ -1,4 +1,6 @@
 import math
+from scipy.integrate import solve_ivp
+from plantml import plantml
 
 # Calc
 import calfem.core as cfc
@@ -20,6 +22,9 @@ alpha_c = 120
 T_inf = 293
 T_out = 285
 T_in = 277
+
+thickness = 1.6
+density = 540
 
 
 ########################################
@@ -150,5 +155,76 @@ cfv.draw_nodal_values(a, coords, edof, dofs_per_node=mesh.dofs_per_node, el_type
 print("T_min = " + str(min(a)))
 print("T_max = " + str(max(a)))
 cfv.colorbar()
+
+########################################
+#             TRANSIENT                #
+########################################
+
+#Ce eller Ci inte båda looool
+
+#Define the effect functions
+def f_1(t):
+    return 100*np.e**(-144*((600 - t)/3600)**2) * 1000
+
+def f_2(t):
+    return 88.42*1000 if t <= 600 else 0
+
+K=np.zeros((ndof, ndof))
+f=np.zeros((ndof, 1))
+f_conv = np.zeros((ndof, 1))
+C=np.zeros((ndof, ndof))
+
+
+
+
+def eulerint(a0, ts):
+    ys = np.empty((len(ts), len(a0)))
+    ys[0] = a0
+    # t = t0
+    # h = (tf - t0) / N
+    # implA = kg.inv(np.eye(len(y0)) - h*A)
+    for i in range(nelem):
+        kei = cfc.flw2te(ex[i,:], ey[i,:], [1], 80*np.eye(2))
+        Cei = plantml(ex[i,:],ey[i,:], density*thickness)
+        cfc.assem(edof[i,:], K, kei)
+        cfc.assem(edof[i,:], C, Cei)
+    Cinv = np.linalg.inv(C)
+    convection_boundary(boundaryElements, K, f_conv, T_inf, alpha_n, MARKER_T_CONVECTION)
+    convection_boundary(boundaryElements, K, f_conv, T_out, alpha_c, MARKER_T_OUT)
+    convection_boundary(boundaryElements, K, f_conv, T_in, alpha_c, MARKER_T_IN)
+    dt = ts[1] - ts[0]
+
+    for t_i in range(1, len(ts)):
+        f=np.zeros((ndof, 1))
+        for i in range(nelem):
+            kei, fli = cfc.flw2te(ex[i,:], ey[i,:], [1], 80*np.eye(2), f_1(ts[t_i]))
+            cfc.assem(edof[i,:], np.zeros((ndof, ndof)), kei, f, fli)
+        temp1 = np.matmul(K, np.transpose(ys[t_i - 1])) - (f_conv + f).flatten()
+        temp2 = -dt * Cinv @ temp1
+        # print("f: " + str(np.matmul(K, np.transpose(ys[t_i - 1])).shape))
+        # print("temp1: " + str(temp1.shape))
+        # print("Cinv: " + str(Cinv.shape))
+        # print("Cinv * temp1: " + str((Cinv @ temp1).shape))
+        ys[t_i] = ys[t_i - 1] + np.transpose(temp2)
+    return ys
+
+ts = np.linspace(0, 1000, 500)
+y0 = np.array([273]*ndof)
+ys = eulerint(y0, ts)
+
+for i in range(0, 6):
+    t = len(ts)//6
+    cfv.figure()
+    cfv.draw_nodal_values(np.transpose(ys[t]), coords, edof, dofs_per_node=mesh.dofs_per_node, el_type=mesh.el_type)
+    print("T_min = " + str(min(a)))
+    print("T_max = " + str(max(a)))
+    cfv.colorbar()
+
+# plt.loglog(hs, errs)
+# plt.plot(hs, errs)
+# plt.show()
+
+
+
 cfv.showAndWait()
 #
