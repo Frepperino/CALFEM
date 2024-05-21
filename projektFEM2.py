@@ -35,6 +35,7 @@ density = 540
 MARKER_T_CONVECTION=5
 MARKER_T_OUT=1
 MARKER_T_IN=2
+MARKER_U_DISPLACEMENT=6
 
 ###  MESH  ###
 g = cfg.Geometry()
@@ -53,8 +54,8 @@ g.point([0.025, 0.100])      # 6
 g.point([0.0, 0.075])        # 7
 
                                                  # CURVES
-g.spline([0, 1])            # 0
-g.spline([1, 2])            # 1
+g.spline([0, 1], marker=MARKER_U_DISPLACEMENT)            # 0
+g.spline([1, 2], marker=MARKER_U_DISPLACEMENT)            # 1
 g.spline([2, 3], marker=MARKER_T_CONVECTION)            # 2
 g.spline([3, 5])            # 3
 g.circle([5, 4, 6], marker=MARKER_T_OUT)         # 4
@@ -85,7 +86,7 @@ cfv.draw_geometry(g)
 mesh = cfm.GmshMesh(g)
 mesh.el_type = 2
 mesh.dofs_per_node = 1
-mesh.el_size_factor = 0.015
+mesh.el_size_factor = 0.03
 mesh.returnBoundaryElements = True
 
 coords, edof, dofs, bdofs, elementmarkers, boundaryElements = mesh.create()
@@ -132,9 +133,11 @@ def convection_boundary(boundaryElements, K, f, T, alpha, marker):
         Kce = np.array([[2, 1], [1, 2]])
         L = math.sqrt((coords[node1i][0] - coords[node2i][0])**2 + (coords[node1i][1]-coords[node2i][1])**2)
         
-        Kce= (alpha*L/6)*Kce
+        # thickness här?
+
+        Kce= (alpha*L/6)*Kce*thickness
         fbc = np.array([[1/2], [1/2]])
-        fbc*=alpha*T*L
+        fbc*=alpha*T*L*thickness
 
         cfc.assem(np.array([node1, node2]), K, Kce, f, fbc)
 
@@ -154,6 +157,7 @@ cfv.draw_nodal_values(a, coords, edof, dofs_per_node=mesh.dofs_per_node, el_type
 print("T_min = " + str(min(a)))
 print("T_max = " + str(max(a)))
 cfv.colorbar()
+
 
 
 ########################################
@@ -177,46 +181,116 @@ C=np.zeros((ndof, ndof))
 
 
 
-def eulerint(a0, ts):
-    ys = np.empty((ts.size, a0.size))
-    ys[0, :] = a0
-    print(ys)
-    # t = t0
-    # h = (tf - t0) / N
-    # implA = kg.inv(np.eye(len(y0)) - h*A)
-    for i in range(nelem):
-        kei, fli = cfc.flw2te(ex[i,:], ey[i,:], [1], 80*np.eye(2), 1)
-        Cei = plantml(ex[i,:],ey[i,:], density*3600*thickness)
-        cfc.assem(edof[i,:], K, kei, f_l, fli)
-        cfc.assem(edof[i,:], C, Cei)
-    
-    convection_boundary(boundaryElements, K, f_conv, T_inf, alpha_n, MARKER_T_CONVECTION)
-    convection_boundary(boundaryElements, K, f_conv, T_out, alpha_c, MARKER_T_OUT)
-    convection_boundary(boundaryElements, K, f_conv, T_in, alpha_c, MARKER_T_IN)
+ts = np.linspace(0, 3600, 100)
+y0 = np.full((ndof,), 293)
 
-    dt = ts[1] - ts[0]
-    for t_i in range(1, len(ts)):
-        f=f_l*f_1(ts[t_i]) + f_conv
-        temp1 = dt*f.flatten() + (C@(np.transpose(ys[t_i - 1])))
-        temp2 = (C + dt*K)
-        #print("f: " + str((temp1).shape))
-        # print("temp1: " + str(temp1.shape))
-        # print("Cinv: " + str(Cinv.shape))
-        # print("Cinv * temp1: " + str((Cinv @ temp1).shape))
-        ys[t_i] = np.linalg.inv(temp2)@(temp1)
-    return ys
+ys = np.empty((ts.size, y0.size))
+ys[0, :] = y0
+print(ys)
+# t = t0
+# h = (tf - t0) / N
+# implA = kg.inv(np.eye(len(y0)) - h*A)
+for i in range(nelem):
+    kei, fli = cfc.flw2te(ex[i,:], ey[i,:], [thickness], 80*np.eye(2), 1)
+    A = np.linalg.det(np.vstack((np.ones((3, )), ex[i,:], ey[i,:])))/2
+    Cei = plantml(ex[i,:],ey[i,:], density*3600*thickness)
+    cfc.assem(edof[i,:], K, kei, f_l, fli)
+    cfc.assem(edof[i,:], C, Cei)
 
-ts = np.linspace(0, 3600, 25)
-y0 = np.full((1, ndof), 273)
-ys = eulerint(y0, ts)
+convection_boundary(boundaryElements, K, f_conv, T_inf, alpha_n, MARKER_T_CONVECTION)
+convection_boundary(boundaryElements, K, f_conv, T_out, alpha_c, MARKER_T_OUT)
+convection_boundary(boundaryElements, K, f_conv, T_in, alpha_c, MARKER_T_IN)
+# C_inv = np.linalg.inv(C)
+# CK = -1*C_inv@K
+# CFB = C_inv@f_conv.flatten()
+# CFl = C_inv@f_l.flatten()
 
-for i in range(0, 4):
-    t = len(ts)//4
+# def IVPTHANG(t,a):
+#     return CK @ a + CFB + CFl*f_1(t)
+
+# solution = solve_ivp(IVPTHANG, (0, 3600), y0, method="Radau", t_eval=ts)
+
+dt = ts[1] - ts[0]
+for t_i in range(1, len(ts)):
+    f=f_l*f_1(ts[t_i]) + f_conv
+    temp1 = dt*f.flatten() + (C@(np.transpose(ys[t_i - 1])))
+    temp2 = (C + dt*K)
+    #print(temp1)
+    #print("f: " + str((temp1).shape))
+    # print("temp1: " + str(temp1.shape))
+    # print("Cinv: " + str(Cinv.shape))
+    # print("Cinv * temp1: " + str((Cinv @ temp1).shape))
+    ys[t_i] = np.transpose(np.linalg.inv(temp2)@(temp1))
+
+
+
+
+
+
+plot_ts = [0, 15, 30, 45, 60, 80]
+max_ys = np.zeros((100,))
+min_ys = np.zeros((100,))
+deviation = np.zeros((100,))
+
+for i in range(len(ts)):
+    max_val = max(ys[i])
+    min_val = min(ys[i])
+    max_dev = max(abs(max_val - T_inf), abs(min_val - T_inf))
+    max_ys[i] = max_val
+    min_ys[i] = min_val
+    deviation[i] = max_dev
+
+
+
+for i in range(len(plot_ts)):
     cfv.figure()
-    cfv.draw_nodal_values(np.transpose(ys[t]), coords, edof, dofs_per_node=mesh.dofs_per_node, el_type=mesh.el_type)
-    print("T_min = " + str(min(a)))
-    print("T_max = " + str(max(a)))
+    cfv.draw_nodal_values(np.transpose(ys[plot_ts[i]]), coords, edof, dofs_per_node=mesh.dofs_per_node, el_type=mesh.el_type)
+    print("T_min = " + str(min(ys[plot_ts[i]])))
+    print("T_max = " + str(max(ys[plot_ts[i]])))
     cfv.colorbar()
+    cfv.title("Time = " + str(ts[plot_ts[i]]))
+
+cfv.figure()
+cfv.plt.plot(ts, max_ys)
+cfv.title("Max Ys")
+cfv.figure()
+cfv.plt.plot(ts, min_ys)
+cfv.title("Min Ys")
+cfv.figure()
+cfv.plt.plot(ts, deviation)
+cfv.title("Deviation")
+
+# ep = [1, thickness]
+# D = cfc.hooke(1, 5e9, 0.36)
+
+# cfv.draw_geometry(g)
+
+# mesh = cfm.GmshMesh(g)
+# mesh.el_type = 2
+# mesh.dofs_per_node = 2
+# mesh.el_size_factor = 0.015
+# mesh.returnBoundaryElements = True
+
+# coords, edof, dofs, bdofs, elementmarkers, boundaryElements = mesh.create()
+
+# n_dofs = np.size(dofs)
+# ex, ey = cfc.coordxtr(edof, coords, dofs)
+# K = np.zeros([n_dofs,n_dofs])
+
+# for eltopo, elx, ely in zip(edof, ex, ey):
+#     Ke = cfc.planqe(elx, ely, ep, D)
+#     cfc.assem(eltopo, K, Ke)
+
+# f = np.zeros([n_dofs,1])
+
+# bc = np.array([],'i')
+# bcVal = np.array([],'f')
+
+# bc, bcVal = cfu.applybc(bdofs, bc, bcVal, MARKER_U_DISPLACEMENT, 0.0, 0)
+
+# #cfu.applyforce(bdofs, f, 7, 10e5, 1)
+# a,r = cfc.solveq(K,f,bc,bcVal)
+
 
 
 

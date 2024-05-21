@@ -24,4 +24,3 @@ print(K)
 a, r = cfc.solveq(K, F, bc, bc_value)
 
 print("a: "+ str(a))
-cfc.patch
