@@ -2,7 +2,6 @@ import math
 from scipy.integrate import solve_ivp
 from plantml import plantml
 
-# Calc
 import calfem.core as cfc
 import numpy as np
 import calfem.utils as cfu
@@ -186,7 +185,7 @@ y0 = np.full((ndof,), 293)
 
 ys = np.empty((ts.size, y0.size))
 ys[0, :] = y0
-print(ys)
+#print(ys)
 # t = t0
 # h = (tf - t0) / N
 # implA = kg.inv(np.eye(len(y0)) - h*A)
@@ -260,39 +259,94 @@ cfv.figure()
 cfv.plt.plot(ts, deviation)
 cfv.title("Deviation")
 
-# ep = [1, thickness]
-# D = cfc.hooke(1, 5e9, 0.36)
-
-# cfv.draw_geometry(g)
-
-# mesh = cfm.GmshMesh(g)
-# mesh.el_type = 2
-# mesh.dofs_per_node = 2
-# mesh.el_size_factor = 0.015
-# mesh.returnBoundaryElements = True
-
-# coords, edof, dofs, bdofs, elementmarkers, boundaryElements = mesh.create()
-
-# n_dofs = np.size(dofs)
-# ex, ey = cfc.coordxtr(edof, coords, dofs)
-# K = np.zeros([n_dofs,n_dofs])
-
-# for eltopo, elx, ely in zip(edof, ex, ey):
-#     Ke = cfc.planqe(elx, ely, ep, D)
-#     cfc.assem(eltopo, K, Ke)
-
-# f = np.zeros([n_dofs,1])
-
-# bc = np.array([],'i')
-# bcVal = np.array([],'f')
-
-# bc, bcVal = cfu.applybc(bdofs, bc, bcVal, MARKER_U_DISPLACEMENT, 0.0, 0)
-
-# #cfu.applyforce(bdofs, f, 7, 10e5, 1)
-# a,r = cfc.solveq(K,f,bc,bcVal)
 
 
+###################### VON MISES ######################
 
+vonmises_temp = ys[np.argmax(deviation)]
+
+ep = [2, thickness]
+D = cfc.hooke(2, 5e9, 0.36)                                 ## 1 here????
+# D = np.insert(D, 2, values = [0, 0, 0], axis = 0)
+# D = np.insert(D, 2, values = [0, 0, D[0,0], 0], axis = 1)
+print("D: " + str(D))
+
+
+mesh = cfm.GmshMesh(g)
+mesh.el_type = 2
+mesh.dofs_per_node = 2
+mesh.el_size_factor = 0.03
+mesh.returnBoundaryElements = True
+
+coords, edof, dofs, bdofs, elementmarkers, boundaryElements = mesh.create()
+
+n_dofs = np.size(dofs)
+print(n_dofs)
+print(ndof)
+ex, ey = cfc.coordxtr(edof, coords, dofs)
+K = np.zeros((n_dofs,n_dofs))
+f = np.zeros((n_dofs,1))
+
+expansion = 60e-6
+
+for eltopo, elx, ely in zip(edof, ex, ey):
+    Ke = cfc.plante(elx, ely, ep, D)
+    dT = sum([vonmises_temp[(eltopo[0] - 1)//2], vonmises_temp[eltopo[1]//2], vonmises_temp[eltopo[2]//2]]) / 3 - T_inf
+    eps_dT = np.transpose(np.array([1, 1, 0]))*expansion*dT
+    Deps = D@eps_dT.flatten()
+    print(np.array([(D@eps_dT.flatten())[0, i] for i in range(Deps.shape[1])]))
+    #for e in range(4):
+    #    print((D@eps_dT.flatten())[0, e])
+    #print(str((D@eps_dT.flatten()).shape) + " " + str((D@eps_dT.flatten())[0].shape))
+    fe = cfc.plantf(elx, ely, ep, np.array([Deps[0, i] for i in range(Deps.shape[1])]))
+    # Deps^dT
+    # D@alphadT
+
+    cfc.assem(eltopo, K, Ke, f, fe)
+
+
+bc = np.array([],'i')
+bcVal = np.array([],'f')
+
+# FIXA X BARA DISPLACEMENET AOPWDPOI 
+bc, bcVal = cfu.applybc(bdofs, bc, bcVal, MARKER_U_DISPLACEMENT, 0.0, 0)
+#bc, bcVal = cfu.applybc(bdofs, bc, bcVal, MARKER_U_DISPLACEMENT, 0.0, 0)
+
+
+#cfu.applyforce(bdofs, f, 7, 10e5, 1)
+a,r = cfc.solveq(K,f,bc,bcVal)
+
+ed = cfc.extract_eldisp(edof,a)
+
+von_mises = []
+
+# For each element:
+for i in range(edof.shape[0]):
+    # Determine element stresses and strains in the element.
+    es, et = cfc.plants(ex[i,:], ey[i,:], ep, D, ed[i,:])
+    
+    #print("es: " + str(es))
+    # Calc and append effective stress to list
+    print((np.array([1, 1, 0]).T*expansion*dT).shape)
+    print((et.T.flatten() - np.array([1, 1, 0]).T*expansion*dT).shape)
+    es = (D@(et.T.flatten() - np.array([1, 1, 0]).T*expansion*dT)).flatten()
+    print(es.shape)
+    von_mises.append(np.sqrt(np.power(es[0, 0],2) + np.power(es[0, 1],2) - es[0,0]*es[0,1] + 3*np.power(es[0,2],2)))
+
+    ## es: [sigx sigy tauxy]
+
+cfv.figure(fig_size=(10,10))
+cfv.draw_element_values(von_mises, coords, edof, mesh.dofs_per_node, mesh.el_type, None, draw_elements=False, draw_undisplaced_mesh=False, title="Example 6 - Effective stress")
+cfv.colorbar()
+
+cfv.figure(fig_size=(10,10))
+cfv.draw_displacements(a, coords, edof, mesh.dofs_per_node, mesh.el_type, draw_undisplaced_mesh=True, title="Example 06 - Displacements")
 
 cfv.showAndWait()
-#
+print(max(von_mises))
+
+
+
+
+# p-type
+# när har vi 3x3 typ
