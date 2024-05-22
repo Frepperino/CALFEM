@@ -35,6 +35,7 @@ MARKER_T_CONVECTION=5
 MARKER_T_OUT=1
 MARKER_T_IN=2
 MARKER_U_DISPLACEMENT=6
+MARKER_U_DISPLACEMENT_X=9
 
 ###  MESH  ###
 g = cfg.Geometry()
@@ -56,10 +57,10 @@ g.point([0.0, 0.075])        # 7
 g.spline([0, 1], marker=MARKER_U_DISPLACEMENT)            # 0
 g.spline([1, 2], marker=MARKER_U_DISPLACEMENT)            # 1
 g.spline([2, 3], marker=MARKER_T_CONVECTION)            # 2
-g.spline([3, 5])            # 3
+g.spline([3, 5], marker=MARKER_U_DISPLACEMENT_X)            # 3
 g.circle([5, 4, 6], marker=MARKER_T_OUT)         # 4
 g.circle([6, 4, 7], marker=MARKER_T_OUT)         # 5
-g.spline([7, 0])            # 6
+g.spline([7, 0], marker=MARKER_U_DISPLACEMENT_X)            # 6
 
 # HOLES
 def create_hole(center, radius, point_startid, curve_startid, marker):
@@ -85,7 +86,7 @@ cfv.draw_geometry(g)
 mesh = cfm.GmshMesh(g)
 mesh.el_type = 2
 mesh.dofs_per_node = 1
-mesh.el_size_factor = 0.03
+mesh.el_size_factor = 0.023
 mesh.returnBoundaryElements = True
 
 coords, edof, dofs, bdofs, elementmarkers, boundaryElements = mesh.create()
@@ -179,7 +180,6 @@ C=np.zeros((ndof, ndof))
 
 
 
-
 ts = np.linspace(0, 3600, 100)
 y0 = np.full((ndof,), 293)
 
@@ -267,15 +267,19 @@ vonmises_temp = ys[np.argmax(deviation)]
 
 ep = [2, thickness]
 D = cfc.hooke(2, 5e9, 0.36)                                 ## 1 here????
+nu = 0.36
+expansion = 60e-6
+E = 5e9
+D = E/(1-2*nu)/(1+nu)*np.array([[1-nu, nu, 0], [nu, 1-nu, 0], [0, 0, 1/2*(1-2*nu)]])
 # D = np.insert(D, 2, values = [0, 0, 0], axis = 0)
 # D = np.insert(D, 2, values = [0, 0, D[0,0], 0], axis = 1)
 print("D: " + str(D))
-
+cfv.plt
 
 mesh = cfm.GmshMesh(g)
 mesh.el_type = 2
 mesh.dofs_per_node = 2
-mesh.el_size_factor = 0.03
+mesh.el_size_factor = 0.023
 mesh.returnBoundaryElements = True
 
 coords, edof, dofs, bdofs, elementmarkers, boundaryElements = mesh.create()
@@ -287,18 +291,19 @@ ex, ey = cfc.coordxtr(edof, coords, dofs)
 K = np.zeros((n_dofs,n_dofs))
 f = np.zeros((n_dofs,1))
 
-expansion = 60e-6
+
 
 for eltopo, elx, ely in zip(edof, ex, ey):
     Ke = cfc.plante(elx, ely, ep, D)
-    dT = sum([vonmises_temp[(eltopo[0] - 1)//2], vonmises_temp[eltopo[1]//2], vonmises_temp[eltopo[2]//2]]) / 3 - T_inf
-    eps_dT = np.transpose(np.array([1, 1, 0]))*expansion*dT
-    Deps = D@eps_dT.flatten()
-    print(np.array([(D@eps_dT.flatten())[0, i] for i in range(Deps.shape[1])]))
+    dT = sum([vonmises_temp[(eltopo[0] - 1)//2], vonmises_temp[(eltopo[1] - 1)//2], vonmises_temp[(eltopo[2]-1)//2]]) / 3 - T_inf
+    eps_dT = (1+nu)*np.transpose(np.array([1, 1, 0]))*expansion*dT
+    #print((D@eps_dT).reshape(3,1).T.shape)
+    #Deps = D@eps_dT.flatten()
+    #rint(np.array([(D@eps_dT.flatten())[0, i] for i in range(Deps.shape[1])]))
     #for e in range(4):
     #    print((D@eps_dT.flatten())[0, e])
     #print(str((D@eps_dT.flatten()).shape) + " " + str((D@eps_dT.flatten())[0].shape))
-    fe = cfc.plantf(elx, ely, ep, np.array([Deps[0, i] for i in range(Deps.shape[1])]))
+    fe = cfc.plantf(elx, ely, ep, (D@eps_dT).reshape(3,1).T)
     # Deps^dT
     # D@alphadT
 
@@ -310,7 +315,7 @@ bcVal = np.array([],'f')
 
 # FIXA X BARA DISPLACEMENET AOPWDPOI 
 bc, bcVal = cfu.applybc(bdofs, bc, bcVal, MARKER_U_DISPLACEMENT, 0.0, 0)
-#bc, bcVal = cfu.applybc(bdofs, bc, bcVal, MARKER_U_DISPLACEMENT, 0.0, 0)
+bc, bcVal = cfu.applybc(bdofs, bc, bcVal, MARKER_U_DISPLACEMENT_X, 0.0, 1)
 
 
 #cfu.applyforce(bdofs, f, 7, 10e5, 1)
@@ -321,17 +326,19 @@ ed = cfc.extract_eldisp(edof,a)
 von_mises = []
 
 # For each element:
-for i in range(edof.shape[0]):
+for eltopo, elx, ely, eld in zip(edof, ex, ey, ed):
     # Determine element stresses and strains in the element.
-    es, et = cfc.plants(ex[i,:], ey[i,:], ep, D, ed[i,:])
-    
+    es, et = cfc.plants(elx, ely, ep, D, eld)
+    dT = sum([vonmises_temp[(eltopo[0] - 1)//2], vonmises_temp[(eltopo[1]-1)//2], vonmises_temp[(eltopo[2]-1)//2]]) / 3 - T_inf
     #print("es: " + str(es))
     # Calc and append effective stress to list
-    print((np.array([1, 1, 0]).T*expansion*dT).shape)
-    print((et.T.flatten() - np.array([1, 1, 0]).T*expansion*dT).shape)
-    es = (D@(et.T.flatten() - np.array([1, 1, 0]).T*expansion*dT)).flatten()
-    print(es.shape)
-    von_mises.append(np.sqrt(np.power(es[0, 0],2) + np.power(es[0, 1],2) - es[0,0]*es[0,1] + 3*np.power(es[0,2],2)))
+    #print((np.array([1, 1, 0]).T*expansion*dT).shape)
+    #print((et.T.flatten() - np.array([1, 1, 0]).T*expansion*dT).shape)
+    es = (D@(et.T.flatten() - (1+nu)*np.array([1, 1, 0]).T*expansion*dT)).flatten()
+    sigz = nu*(es[0] + es[1]) - expansion*E*dT
+    
+    #print(es.shape)
+    von_mises.append(np.sqrt(np.power(es[0],2) + np.power(es[1],2) + np.power(sigz,2) - es[0]*es[1] - es[0]*sigz - es[1]*sigz + 3*np.power(es[2],2)))
 
     ## es: [sigx sigy tauxy]
 
@@ -340,7 +347,7 @@ cfv.draw_element_values(von_mises, coords, edof, mesh.dofs_per_node, mesh.el_typ
 cfv.colorbar()
 
 cfv.figure(fig_size=(10,10))
-cfv.draw_displacements(a, coords, edof, mesh.dofs_per_node, mesh.el_type, draw_undisplaced_mesh=True, title="Example 06 - Displacements")
+cfv.draw_displacements(a * 100, coords, edof, mesh.dofs_per_node, mesh.el_type, draw_undisplaced_mesh=True, title="Example 06 - Displacements")
 
 cfv.showAndWait()
 print(max(von_mises))
